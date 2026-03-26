@@ -1,0 +1,127 @@
+# =============================================
+# 家谱管理系统 - Docker Compose 部署配置
+# =============================================
+version: '3.8'
+
+services:
+  # -------- 基础设施 --------
+  mysql:
+    image: mysql:8.0
+    container_name: family-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: ruoyi-vue-pro
+      MYSQL_CHARSET: utf8mb4
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql:/docker-entrypoint-initdb.d
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+
+  redis:
+    image: redis:7-alpine
+    container_name: family-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+  nacos:
+    image: nacos/nacos-server:v2.3.0
+    container_name: family-nacos
+    restart: always
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: mysql
+      MYSQL_SERVICE_HOST: mysql
+      MYSQL_SERVICE_DB_NAME: ruoyi-vue-pro
+      MYSQL_SERVICE_PORT: 3306
+      MYSQL_SERVICE_USER: root
+      MYSQL_SERVICE_PASSWORD: root123456
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    depends_on:
+      - mysql
+
+  minio:
+    image: minio/minio
+    container_name: family-minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: admin123456
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+
+  # -------- 应用服务 --------
+  gateway:
+    image: family-gateway:latest
+    container_name: family-gateway
+    restart: always
+    build:
+      context: ./yudao-gateway
+      dockerfile: Dockerfile
+    ports:
+      - "48080:48080"
+    environment:
+      SPRING_CLOUD_NACOS_SERVER_ADDR: nacos:8848
+      SPRING_REDIS_HOST: redis
+    depends_on:
+      - nacos
+      - redis
+
+  family-server:
+    image: family-server:latest
+    container_name: family-server
+    restart: always
+    build:
+      context: ./yudao-module-family/yudao-module-family-biz
+      dockerfile: Dockerfile
+    ports:
+      - "48081:48081"
+    environment:
+      SPRING_CLOUD_NACOS_SERVER_ADDR: nacos:8848
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ruoyi-vue-pro?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root123456
+      SPRING_REDIS_HOST: redis
+      COZE_API_KEY: ${COZE_API_KEY:-}
+      COZE_BOT_ID: ${COZE_BOT_ID:-}
+    depends_on:
+      - mysql
+      - redis
+      - nacos
+
+  # -------- 前端 --------
+  web:
+    image: family-web:latest
+    container_name: family-web
+    restart: always
+    build:
+      context: ./yudao-ui-admin-vue3
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - gateway
+
+volumes:
+  mysql-data:
+  redis-data:
+  minio-data:
+
+networks:
+  default:
+    name: family-network
