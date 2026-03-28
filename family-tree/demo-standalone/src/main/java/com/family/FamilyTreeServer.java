@@ -5,18 +5,12 @@ import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.time.LocalDate;
 import java.util.*;
+import java.util.regex.*;
 import java.util.stream.Collectors;
 
-/**
- * 家谱管理系统 - 独立演示服务器
- * 零依赖，使用 JDK 内置 HTTP 服务器 + 内存数据
- * 启动后访问 http://localhost:8080
- */
 public class FamilyTreeServer {
 
-    // ==================== 数据模型 ====================
     record FamilyTree(long id, String name, String surname, String hallName, String origin,
                       String motto, String clanRules, String description,
                       String ancestorName, String ancestorStory, int memberCount, int generationCount) {}
@@ -31,14 +25,24 @@ public class FamilyTreeServer {
 
     record Rank(long id, long treeId, int rankOrder, String rankChar, String description) {}
 
-    // ==================== 内存数据库 ====================
     static List<FamilyTree> trees = new ArrayList<>();
     static List<Member> members = new ArrayList<>();
     static List<Event> events = new ArrayList<>();
     static List<Rank> ranks = new ArrayList<>();
+    static long eventIdSeq = 1;
+    static long rankIdSeq = 1;
+
+    // Province names for stats grouping (Unicode escaped)
+    static final String[] PROVINCES = {
+        "\u5317\u4eac",   // Beijing
+        "\u6c5f\u82cf",   // Jiangsu
+        "\u6d59\u6c5f",   // Zhejiang
+        "\u5b89\u5fbd",   // Anhui
+        "\u7518\u8083"    // Gansu
+    };
 
     public static void main(String[] args) throws Exception {
-        initDemoData();
+        loadDataFromSql();
 
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         server.createContext("/api/tree/list", ex -> json(ex, treesJson()));
@@ -52,13 +56,169 @@ public class FamilyTreeServer {
         server.start();
 
         System.out.println("==========================================================");
-        System.out.println("  家谱管理系统 Demo 已启动!");
-        System.out.println("  访问地址: http://localhost:8080");
-        System.out.println("  API 文档: http://localhost:8080/api/tree/list");
+        System.out.println("  Family Tree Demo Server Started!");
+        System.out.println("  URL: http://localhost:8080");
+        System.out.println("  API: http://localhost:8080/api/tree/list");
         System.out.println("==========================================================");
     }
 
-    // ==================== HTTP 工具 ====================
+    // ==================== Load data from SQL file ====================
+    static void loadDataFromSql() {
+        String sql = readResourceUtf8("/data.sql");
+        if (sql == null || sql.isEmpty()) {
+            System.out.println("Warning: data.sql not found, no demo data loaded.");
+            return;
+        }
+
+        // Parse family_tree inserts
+        Pattern treePattern = Pattern.compile(
+            "INSERT INTO family_tree[^V]+VALUES\\s*\\(([^;]+?)\\);", Pattern.DOTALL);
+        Matcher tm = treePattern.matcher(sql);
+        while (tm.find()) {
+            List<String> vals = parseSqlValues(tm.group(1));
+            if (vals.size() >= 12) {
+                trees.add(new FamilyTree(
+                    longVal(vals, 0), strVal(vals, 1), strVal(vals, 2), strVal(vals, 3),
+                    strVal(vals, 4), strVal(vals, 5), strVal(vals, 6), strVal(vals, 7),
+                    strVal(vals, 8), strVal(vals, 9),
+                    intVal(vals, 10), intVal(vals, 11)));
+            }
+        }
+
+        // Parse family_member inserts
+        Pattern memberPattern = Pattern.compile(
+            "INSERT INTO family_member[^V]+VALUES\\s*\\(([^;]+?)\\);", Pattern.DOTALL);
+        Matcher mm = memberPattern.matcher(sql);
+        while (mm.find()) {
+            List<String> vals = parseSqlValues(mm.group(1));
+            int size = vals.size();
+            if (size >= 15) {
+                // Two formats: with biography (16 fields) and without (15 fields)
+                boolean hasBio = size >= 16;
+                int offset = hasBio ? 0 : 0;
+                members.add(new Member(
+                    longVal(vals, 0), longVal(vals, 1), strVal(vals, 2), intVal(vals, 3),
+                    strVal(vals, 4), strVal(vals, 5), intVal(vals, 6), intVal(vals, 7),
+                    strVal(vals, 8), strVal(vals, 9), strVal(vals, 10), strVal(vals, 11),
+                    hasBio ? strVal(vals, 12) : null,
+                    nullLong(vals, hasBio ? 13 : 12), nullLong(vals, hasBio ? 14 : 13),
+                    intVal(vals, hasBio ? 15 : 14)));
+            }
+        }
+
+        // Parse generation_rank inserts
+        Pattern rankPattern = Pattern.compile(
+            "INSERT INTO generation_rank[^V]+VALUES\\s*\\(([^;]+?)\\);", Pattern.DOTALL);
+        Matcher rm = rankPattern.matcher(sql);
+        while (rm.find()) {
+            List<String> vals = parseSqlValues(rm.group(1));
+            if (vals.size() >= 4) {
+                ranks.add(new Rank(rankIdSeq++, longVal(vals, 0), intVal(vals, 1),
+                    strVal(vals, 2), strVal(vals, 3)));
+            }
+        }
+
+        // Parse family_event inserts (two formats: with member_id and without)
+        Pattern eventPattern = Pattern.compile(
+            "INSERT INTO family_event[^V]+VALUES\\s*\\(([^;]+?)\\);", Pattern.DOTALL);
+        Matcher em = eventPattern.matcher(sql);
+        while (em.find()) {
+            String insertLine = em.group(0);
+            List<String> vals = parseSqlValues(em.group(1));
+            boolean hasMemberId = insertLine.contains("member_id");
+            if (hasMemberId && vals.size() >= 7) {
+                events.add(new Event(eventIdSeq++, longVal(vals, 0), nullLong(vals, 1),
+                    strVal(vals, 2), strVal(vals, 3), strVal(vals, 4),
+                    intVal(vals, 5), intVal(vals, 6)));
+            } else if (!hasMemberId && vals.size() >= 6) {
+                events.add(new Event(eventIdSeq++, longVal(vals, 0), null,
+                    strVal(vals, 1), strVal(vals, 2), strVal(vals, 3),
+                    intVal(vals, 4), intVal(vals, 5)));
+            }
+        }
+
+        System.out.println("Loaded: " + trees.size() + " trees, " + members.size() +
+            " members, " + events.size() + " events, " + ranks.size() + " ranks");
+    }
+
+    static String readResourceUtf8(String path) {
+        // Try classpath first
+        InputStream is = FamilyTreeServer.class.getResourceAsStream(path);
+        if (is == null) {
+            // Try file system
+            try {
+                Path filePath = Path.of("src/main/resources" + path);
+                if (Files.exists(filePath)) {
+                    is = Files.newInputStream(filePath);
+                }
+            } catch (Exception e) { /* ignore */ }
+        }
+        if (is == null) return null;
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+            return br.lines().collect(Collectors.joining("\n"));
+        } catch (Exception e) { return null; }
+    }
+
+    // Simple SQL VALUES parser - handles quoted strings with commas inside
+    static List<String> parseSqlValues(String raw) {
+        List<String> result = new ArrayList<>();
+        raw = raw.trim();
+        int i = 0;
+        while (i < raw.length()) {
+            char c = raw.charAt(i);
+            if (c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == ',') { i++; continue; }
+            if (c == '\'') {
+                // Quoted string
+                StringBuilder sb = new StringBuilder();
+                i++;
+                while (i < raw.length()) {
+                    char ch = raw.charAt(i);
+                    if (ch == '\\' && i + 1 < raw.length() && raw.charAt(i + 1) == 'n') {
+                        sb.append('\n'); i += 2; continue;
+                    }
+                    if (ch == '\'' && i + 1 < raw.length() && raw.charAt(i + 1) == '\'') {
+                        sb.append('\''); i += 2; continue;
+                    }
+                    if (ch == '\'') { i++; break; }
+                    sb.append(ch); i++;
+                }
+                result.add("'" + sb + "'");
+            } else {
+                // Unquoted value (number or NULL)
+                StringBuilder sb = new StringBuilder();
+                while (i < raw.length() && raw.charAt(i) != ',' && raw.charAt(i) != ')') {
+                    sb.append(raw.charAt(i)); i++;
+                }
+                result.add(sb.toString().trim());
+            }
+        }
+        return result;
+    }
+
+    static String strVal(List<String> vals, int idx) {
+        if (idx >= vals.size()) return null;
+        String v = vals.get(idx);
+        if (v.equalsIgnoreCase("NULL")) return null;
+        if (v.startsWith("'") && v.endsWith("'")) return v.substring(1, v.length() - 1);
+        return v;
+    }
+
+    static long longVal(List<String> vals, int idx) {
+        try { return Long.parseLong(vals.get(idx).trim()); } catch (Exception e) { return 0; }
+    }
+
+    static int intVal(List<String> vals, int idx) {
+        try { return Integer.parseInt(vals.get(idx).trim()); } catch (Exception e) { return 0; }
+    }
+
+    static Long nullLong(List<String> vals, int idx) {
+        if (idx >= vals.size()) return null;
+        String v = vals.get(idx).trim();
+        if (v.equalsIgnoreCase("NULL")) return null;
+        try { return Long.parseLong(v); } catch (Exception e) { return null; }
+    }
+
+    // ==================== HTTP ====================
     static String param(HttpExchange ex, String name) {
         String query = ex.getRequestURI().getQuery();
         if (query == null) return "";
@@ -82,10 +242,8 @@ public class FamilyTreeServer {
         String path = ex.getRequestURI().getPath();
         if (path.equals("/")) path = "/index.html";
 
-        // 尝试从 classpath 读取
         InputStream is = FamilyTreeServer.class.getResourceAsStream("/static" + path);
         if (is == null) {
-            // 尝试从文件系统读取
             Path filePath = Path.of("src/main/resources/static" + path);
             if (Files.exists(filePath)) {
                 is = Files.newInputStream(filePath);
@@ -110,7 +268,7 @@ public class FamilyTreeServer {
         ex.close();
     }
 
-    // ==================== JSON 序列化（手写，零依赖） ====================
+    // ==================== JSON serialization ====================
     static String esc(String s) {
         if (s == null) return "null";
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "") + "\"";
@@ -124,7 +282,6 @@ public class FamilyTreeServer {
     }
 
     static String treeDetailJson(String path) {
-        // /api/tree/1/stats or /api/tree/1
         String[] parts = path.split("/");
         long id = 1;
         for (String p : parts) { try { id = Long.parseLong(p); break; } catch (Exception e) {} }
@@ -155,7 +312,7 @@ public class FamilyTreeServer {
                 .collect(Collectors.joining(",", "[", "]")));
     }
 
-    // ==================== 家谱树构建 ====================
+    // ==================== Tree building ====================
     static String memberTreeJson(String treeIdStr) {
         long treeId = parseLong(treeIdStr, 1);
         List<Member> all = members.stream().filter(m -> m.treeId == treeId).toList();
@@ -216,7 +373,7 @@ public class FamilyTreeServer {
         return sb.toString();
     }
 
-    // ==================== 统计 ====================
+    // ==================== Stats ====================
     static String statsJson(long treeId) {
         List<Member> all = members.stream().filter(m -> m.treeId == treeId).toList();
         int total = all.size();
@@ -224,17 +381,19 @@ public class FamilyTreeServer {
         int male = (int) all.stream().filter(m -> m.gender == 1).count();
         int female = (int) all.stream().filter(m -> m.gender == 0).count();
 
+        // "\u7b2c" = "Di"(No.), "\u4e16" = "Shi"(generation)
         Map<String, Integer> genDist = new LinkedHashMap<>();
-        all.stream().collect(Collectors.groupingBy(m -> "第" + m.generation + "世", Collectors.summingInt(m -> 1)))
+        all.stream().collect(Collectors.groupingBy(
+                m -> "\u7b2c" + m.generation + "\u4e16", Collectors.summingInt(m -> 1)))
                 .entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> genDist.put(e.getKey(), e.getValue()));
 
         Map<String, Integer> regionDist = new LinkedHashMap<>();
         all.stream().filter(m -> m.residence != null && !m.residence.isEmpty())
                 .collect(Collectors.groupingBy(m -> {
-                    for (String p : new String[]{"北京","江苏","浙江","安徽","甘肃"}) {
+                    for (String p : PROVINCES) {
                         if (m.residence.contains(p)) return p;
                     }
-                    return m.residence.length() > 4 ? m.residence.substring(0,4) : m.residence;
+                    return m.residence.length() > 4 ? m.residence.substring(0, 4) : m.residence;
                 }, Collectors.summingInt(m -> 1)))
                 .forEach(regionDist::put);
 
@@ -283,58 +442,4 @@ public class FamilyTreeServer {
 
     static String wrap(String data) { return "{\"code\":200,\"message\":\"success\",\"data\":" + data + "}"; }
     static long parseLong(String s, long def) { try { return Long.parseLong(s); } catch (Exception e) { return def; } }
-
-    // ==================== 示例数据 ====================
-    static void initDemoData() {
-        trees.add(new FamilyTree(1, "赵氏家谱", "赵", "百忍堂", "甘肃天水",
-                "忠孝传家久，诗书继世长。勤俭持家远，和睦万事兴。",
-                "一、尊祖敬宗，孝顺父母\n二、兄友弟恭，和睦邻里\n三、勤读诗书，耕读传家\n四、克勤克俭，不事奢华\n五、诚实守信，乐善好施",
-                "赵氏一族源自天水，始祖赵德公于明洪武年间迁居江南，历经六百余年，繁衍至今已逾二十余世。族人秉承祖训，耕读传家，人才辈出，为国为民多有建树。",
-                "赵德公",
-                "始祖赵德公，字润之，原籍甘肃天水。明洪武三年（1370年），奉诏南迁，携家眷定居于江苏南京。",
-                22, 5));
-
-        // 第一世
-        members.add(new Member(1, 1, "赵德公", 1, "1340-03-15", "1420-11-08", 0, 1, "德", "甘肃天水", "江苏南京", "乡绅", "始祖德公，明初南迁江南，开基创业，为赵氏南方一脉之始。", null, 2L, 0));
-        members.add(new Member(2, 1, "李氏", 0, "1342-06-20", "1418-09-12", 0, 1, null, "江苏南京", "江苏南京", null, null, null, null, 0));
-        // 第二世
-        members.add(new Member(3, 1, "赵义忠", 1, "1368-02-10", "1445-07-22", 0, 2, "义", "江苏南京", "江苏南京", "县丞", "义忠公，德公长子，少年聪颖，中举后任县丞，为官清廉。", 1L, 4L, 0));
-        members.add(new Member(4, 1, "王氏", 0, "1370-08-05", "1442-03-18", 0, 2, null, "江苏南京", "江苏南京", null, null, null, null, 0));
-        members.add(new Member(5, 1, "赵义信", 1, "1372-09-18", "1450-12-03", 0, 2, "义", "江苏南京", "浙江杭州", "商人", "义信公，德公次子，经商有道，在杭州开设丝绸铺。", 1L, 6L, 1));
-        members.add(new Member(6, 1, "张氏", 0, "1374-04-12", "1455-08-20", 0, 2, null, "浙江杭州", "浙江杭州", null, null, null, null, 0));
-        // 第三世
-        members.add(new Member(7, 1, "赵礼文", 1, "1395-05-20", "1478-10-15", 0, 3, "礼", "江苏南京", "江苏南京", "教书先生", "礼文公，义忠公长子，饱读诗书，一生教书育人，桃李满天下。", 3L, 8L, 0));
-        members.add(new Member(8, 1, "陈氏", 0, "1398-03-08", "1475-06-30", 0, 3, null, "江苏南京", "江苏南京", null, null, null, null, 0));
-        members.add(new Member(9, 1, "赵礼武", 1, "1398-11-03", "1480-04-25", 0, 3, "礼", "江苏南京", "安徽合肥", "武官", "礼武公，义忠公次子，从军报国，官至千户。", 3L, 10L, 1));
-        members.add(new Member(10, 1, "刘氏", 0, "1400-07-14", "1482-11-20", 0, 3, null, "安徽合肥", "安徽合肥", null, null, null, null, 0));
-        members.add(new Member(11, 1, "赵礼商", 1, "1400-01-25", "1485-09-10", 0, 3, "礼", "浙江杭州", "浙江杭州", "丝绸商人", "礼商公，义信公之子，继承父业，将丝绸生意做到苏州、扬州。", 5L, 12L, 0));
-        members.add(new Member(12, 1, "周氏", 0, "1402-12-08", "1488-05-15", 0, 3, null, "浙江杭州", "浙江杭州", null, null, null, null, 0));
-        // 第四世
-        members.add(new Member(13, 1, "赵智远", 1, "1425-08-12", "1510-02-28", 0, 4, "智", "江苏南京", "江苏南京", "进士/知府", "智远公，礼文公长子，明正统年间中进士，官至知府。", 7L, 14L, 0));
-        members.add(new Member(14, 1, "孙氏", 0, "1428-04-18", "1508-10-05", 0, 4, null, "江苏南京", "江苏南京", null, null, null, null, 0));
-        members.add(new Member(15, 1, "赵智明", 1, "1428-12-05", "1505-06-18", 0, 4, "智", "江苏南京", "江苏南京", "医者", "智明公，礼文公次子，精通岐黄之术，悬壶济世。", 7L, 16L, 1));
-        members.add(new Member(16, 1, "马氏", 0, "1430-09-22", "1502-12-10", 0, 4, null, "江苏南京", "江苏南京", null, null, null, null, 0));
-        members.add(new Member(17, 1, "赵智勇", 1, "1430-06-30", "1512-08-14", 0, 4, "智", "安徽合肥", "安徽合肥", "武举人", "智勇公，礼武公之子，继承父志从军，中武举。", 9L, null, 0));
-        // 第五世
-        members.add(new Member(18, 1, "赵信达", 1, "1455-03-08", "1540-11-20", 0, 5, "信", "江苏南京", "北京", "翰林院编修", "信达公，智远公长子，才华横溢，入翰林院编修国史。", 13L, 19L, 0));
-        members.add(new Member(19, 1, "黄氏", 0, "1458-07-15", "1538-04-25", 0, 5, null, "北京", "北京", null, null, null, null, 0));
-        members.add(new Member(20, 1, "赵信义", 1, "1458-10-22", "1535-05-08", 0, 5, "信", "江苏南京", "江苏南京", "教书先生", "信义公，智远公次子，继承祖父遗风，教书育人。", 13L, null, 1));
-        members.add(new Member(21, 1, "赵信和", 1, "1460-04-18", "1542-09-30", 0, 5, "信", "江苏南京", "浙江杭州", "药铺掌柜", "信和公，智明公之子，将医术与经商结合，开设药铺。", 15L, 22L, 0));
-        members.add(new Member(22, 1, "吴氏", 0, "1462-11-05", "1540-07-18", 0, 5, null, "浙江杭州", "浙江杭州", null, null, null, null, 0));
-
-        // 大事记
-        events.add(new Event(1, 1, 1L, "始祖南迁", "始祖赵德公奉诏从甘肃天水南迁至江苏南京，开创赵氏南方基业。", "1370-03-15", 4, 2));
-        events.add(new Event(2, 1, 3L, "义忠公中举", "二世祖赵义忠参加乡试，高中举人，后任县丞。", "1390-09-01", 5, 1));
-        events.add(new Event(3, 1, 13L, "智远公中进士", "四世祖赵智远于明正统年间高中进士，官至知府，光耀门楣。", "1450-03-20", 5, 2));
-        events.add(new Event(4, 1, 18L, "信达公入翰林", "五世祖赵信达入翰林院任编修，参与编修国史，为族中最高文职。", "1480-06-15", 7, 2));
-        events.add(new Event(5, 1, 11L, "礼商公扩业", "三世赵礼商将丝绸生意扩展至苏州、扬州，赵氏商号名扬江南。", "1435-08-10", 6, 1));
-        events.add(new Event(6, 1, null, "修建赵氏宗祠", "赵氏族人集资在南京修建宗祠，供奉列祖列宗，每年春秋两祭。", "1460-10-01", 0, 2));
-
-        // 字辈
-        String[] chars = {"德","义","礼","智","信","温","良","恭","俭","让"};
-        String[] descs = {"以德立身，厚德载物","义薄云天，见义勇为","知书达礼，礼贤下士","智勇双全，智慧通达","诚实守信，言而有信","温文尔雅，温润如玉","良善正直，积善成德","恭敬谦让，敬业乐群","勤俭持家，克勤克俭","谦让为先，礼让三分"};
-        for (int i = 0; i < 10; i++) {
-            ranks.add(new Rank(i + 1, 1, i + 1, chars[i], descs[i]));
-        }
-    }
 }
