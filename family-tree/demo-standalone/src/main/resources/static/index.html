@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>家谱管理系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f0f2f5; color: #333; }
+
+        /* 顶部导航 */
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 0 24px; height: 56px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,.15); position: sticky; top: 0; z-index: 100; }
+        .header h1 { font-size: 20px; font-weight: 600; letter-spacing: 2px; }
+        .header .subtitle { font-size: 12px; opacity: .8; margin-left: 12px; }
+
+        /* 标签页导航 */
+        .tabs { background: white; border-bottom: 1px solid #e8e8e8; padding: 0 24px; display: flex; gap: 0; position: sticky; top: 56px; z-index: 99; }
+        .tab { padding: 14px 24px; cursor: pointer; font-size: 14px; color: #666; border-bottom: 2px solid transparent; transition: all .2s; }
+        .tab:hover { color: #667eea; }
+        .tab.active { color: #667eea; border-bottom-color: #667eea; font-weight: 600; }
+
+        /* 内容区 */
+        .content { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .page { display: none; }
+        .page.active { display: block; }
+
+        /* 卡片 */
+        .card { background: white; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 6px rgba(0,0,0,.08); }
+        .card-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+        .card-title::before { content: ''; width: 4px; height: 18px; background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 2px; }
+
+        /* 统计卡片 */
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 6px rgba(0,0,0,.08); text-align: center; transition: transform .2s; }
+        .stat-card:hover { transform: translateY(-2px); }
+        .stat-card .number { font-size: 36px; font-weight: 700; background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .stat-card .label { font-size: 13px; color: #888; margin-top: 4px; }
+
+        /* 家谱信息横幅 */
+        .tree-banner { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 12px; padding: 32px; margin-bottom: 20px; position: relative; overflow: hidden; }
+        .tree-banner::after { content: '谱'; position: absolute; right: 30px; top: -20px; font-size: 150px; opacity: .08; font-weight: 900; }
+        .tree-banner h2 { font-size: 28px; margin-bottom: 8px; }
+        .tree-banner .meta { display: flex; gap: 24px; font-size: 14px; opacity: .9; margin-top: 12px; flex-wrap: wrap; }
+        .tree-banner .meta span { display: flex; align-items: center; gap: 4px; }
+        .tree-motto { margin-top: 16px; font-size: 15px; line-height: 1.8; font-style: italic; opacity: .9; border-left: 3px solid rgba(255,255,255,.5); padding-left: 12px; }
+
+        /* 家谱树 SVG */
+        .tree-container { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 6px rgba(0,0,0,.08); position: relative; }
+        .tree-toolbar { padding: 12px 20px; border-bottom: 1px solid #f0f0f0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .tree-toolbar button { padding: 6px 16px; border: 1px solid #d9d9d9; background: white; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all .2s; }
+        .tree-toolbar button:hover { border-color: #667eea; color: #667eea; }
+        .tree-toolbar button.active { background: #667eea; color: white; border-color: #667eea; }
+        #tree-svg { width: 100%; cursor: grab; }
+        #tree-svg:active { cursor: grabbing; }
+
+        /* 节点样式 */
+        .node-group { cursor: pointer; }
+        .node-rect { rx: 8; ry: 8; filter: drop-shadow(0 2px 4px rgba(0,0,0,.1)); transition: all .2s; }
+        .node-group:hover .node-rect { filter: drop-shadow(0 4px 12px rgba(0,0,0,.2)); }
+        .node-name { font-size: 14px; font-weight: 600; fill: #333; }
+        .node-info { font-size: 11px; fill: #888; }
+        .node-gen { font-size: 10px; fill: white; }
+        .spouse-connector { stroke: #e8b4b8; stroke-width: 2; stroke-dasharray: 5,3; }
+        .link { fill: none; stroke: #c0c4cc; stroke-width: 1.5; }
+
+        /* 成员表格 */
+        .member-table { width: 100%; border-collapse: collapse; }
+        .member-table th { background: #fafafa; padding: 12px; text-align: left; font-weight: 600; font-size: 13px; border-bottom: 2px solid #f0f0f0; }
+        .member-table td { padding: 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+        .member-table tr:hover td { background: #f5f3ff; }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; }
+        .badge-male { background: #e6f7ff; color: #1890ff; }
+        .badge-female { background: #fff0f6; color: #eb2f96; }
+        .badge-alive { background: #f6ffed; color: #52c41a; }
+        .badge-dead { background: #f5f5f5; color: #999; }
+
+        /* 大事记时间线 */
+        .timeline { position: relative; padding-left: 30px; }
+        .timeline::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: linear-gradient(to bottom, #667eea, #764ba2); }
+        .timeline-item { position: relative; margin-bottom: 24px; }
+        .timeline-dot { position: absolute; left: -25px; top: 4px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #667eea; background: white; }
+        .timeline-dot.important { background: #667eea; }
+        .timeline-date { font-size: 12px; color: #999; margin-bottom: 4px; }
+        .timeline-title { font-size: 15px; font-weight: 600; color: #333; }
+        .timeline-content { font-size: 13px; color: #666; margin-top: 4px; line-height: 1.6; }
+
+        /* 字辈诗 */
+        .rank-poem { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; padding: 20px; }
+        .rank-char { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; border-radius: 50%; font-size: 24px; font-weight: 700; color: white; background: linear-gradient(135deg, #667eea, #764ba2); box-shadow: 0 2px 8px rgba(102,126,234,.3); position: relative; cursor: pointer; transition: transform .2s; }
+        .rank-char:hover { transform: scale(1.15); }
+        .rank-char .order { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; background: #ff6b6b; font-size: 11px; display: flex; align-items: center; justify-content: center; font-weight: 600; }
+        .rank-char .tooltip { display: none; position: absolute; bottom: -30px; background: #333; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; white-space: nowrap; font-weight: 400; }
+        .rank-char:hover .tooltip { display: block; }
+
+        /* 图表 */
+        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .chart-box { height: 300px; }
+
+        /* 成员详情弹框 */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.45); z-index: 200; justify-content: center; align-items: center; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: white; border-radius: 12px; width: 500px; max-height: 80vh; overflow-y: auto; padding: 28px; position: relative; }
+        .modal-close { position: absolute; right: 16px; top: 16px; cursor: pointer; font-size: 20px; color: #999; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: background .2s; }
+        .modal-close:hover { background: #f0f0f0; }
+        .modal h3 { font-size: 20px; margin-bottom: 16px; }
+        .detail-row { display: flex; padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
+        .detail-label { width: 80px; color: #999; font-size: 13px; flex-shrink: 0; }
+        .detail-value { font-size: 13px; color: #333; }
+
+        @media (max-width: 768px) {
+            .charts-grid { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div style="display:flex;align-items:center;">
+            <h1>家谱管理系统</h1>
+            <span class="subtitle">传承家族文化，记录血脉传承</span>
+        </div>
+        <div style="font-size:13px;opacity:.8;">Demo 演示版</div>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" data-page="dashboard">家族总览</div>
+        <div class="tab" data-page="tree-chart">世系图谱</div>
+        <div class="tab" data-page="members">成员管理</div>
+        <div class="tab" data-page="events">大事记</div>
+        <div class="tab" data-page="ranks">字辈排行</div>
+    </div>
+
+    <div class="content">
+        <!-- 家族总览 -->
+        <div class="page active" id="page-dashboard">
+            <div id="tree-banner"></div>
+            <div id="stats-grid" class="stats-grid"></div>
+            <div class="charts-grid">
+                <div class="card"><div class="card-title">代际分布</div><div id="chart-generation" class="chart-box"></div></div>
+                <div class="card"><div class="card-title">地域分布</div><div id="chart-region" class="chart-box"></div></div>
+            </div>
+        </div>
+
+        <!-- 世系图谱 -->
+        <div class="page" id="page-tree-chart">
+            <div class="tree-container">
+                <div class="tree-toolbar">
+                    <button id="btn-vertical" class="active" onclick="setLayout('vertical')">纵向布局</button>
+                    <button id="btn-horizontal" onclick="setLayout('horizontal')">横向布局</button>
+                    <span style="color:#ccc">|</span>
+                    <button onclick="zoomTree(1.3)">放大</button>
+                    <button onclick="zoomTree(0.7)">缩小</button>
+                    <button onclick="resetZoom()">重置</button>
+                    <span style="color:#ccc">|</span>
+                    <button onclick="exportImage()">导出图片</button>
+                    <span style="flex:1"></span>
+                    <input id="search-input" placeholder="搜索成员..." style="padding:6px 12px;border:1px solid #d9d9d9;border-radius:6px;font-size:13px;width:160px;" oninput="searchMember(this.value)">
+                </div>
+                <svg id="tree-svg" height="700"></svg>
+            </div>
+        </div>
+
+        <!-- 成员管理 -->
+        <div class="page" id="page-members">
+            <div class="card">
+                <div class="card-title">家族成员列表</div>
+                <table class="member-table">
+                    <thead><tr>
+                        <th>姓名</th><th>性别</th><th>世代</th><th>字辈</th><th>出生日期</th><th>状态</th><th>籍贯</th><th>职业</th><th>操作</th>
+                    </tr></thead>
+                    <tbody id="member-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 大事记 -->
+        <div class="page" id="page-events">
+            <div class="card">
+                <div class="card-title">家族大事记</div>
+                <div id="events-timeline" class="timeline"></div>
+            </div>
+        </div>
+
+        <!-- 字辈排行 -->
+        <div class="page" id="page-ranks">
+            <div class="card" style="text-align:center;">
+                <div class="card-title" style="justify-content:center;">字辈排行</div>
+                <p style="color:#888;font-size:13px;margin-bottom:20px;">字辈是家族世系辈分的标识用字，按世代顺序排列</p>
+                <div id="rank-poem" class="rank-poem"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 成员详情弹框 -->
+    <div class="modal-overlay" id="member-modal" onclick="if(event.target===this)closeModal()">
+        <div class="modal">
+            <div class="modal-close" onclick="closeModal()">&times;</div>
+            <div id="modal-content"></div>
+        </div>
+    </div>
+
+    <script>
+    const API = '/api';
+    let treeData = null, statsData = null, allMembers = [], currentLayout = 'vertical';
+    let svg, g, zoom, treeRoot;
+
+    // ==================== 初始化 ====================
+    async function init() {
+        const treesRes = await fetch(`${API}/tree/list`).then(r => r.json());
+        const tree = treesRes.data[0];
+        if (!tree) return;
+
+        const [statsRes, membersRes, eventsRes, ranksRes, treeDataRes] = await Promise.all([
+            fetch(`${API}/tree/${tree.id}/stats`).then(r => r.json()),
+            fetch(`${API}/member/list?treeId=${tree.id}`).then(r => r.json()),
+            fetch(`${API}/event/list?treeId=${tree.id}`).then(r => r.json()),
+            fetch(`${API}/rank/list?treeId=${tree.id}`).then(r => r.json()),
+            fetch(`${API}/member/tree?treeId=${tree.id}`).then(r => r.json()),
+        ]);
+
+        statsData = statsRes.data;
+        allMembers = membersRes.data;
+        treeData = treeDataRes.data;
+
+        renderBanner(tree);
+        renderStats(statsData);
+        renderCharts(statsData);
+        renderMembers(allMembers);
+        renderEvents(eventsRes.data);
+        renderRanks(ranksRes.data);
+        renderTree(treeData);
+    }
+
+    // ==================== 标签切换 ====================
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('page-' + tab.dataset.page).classList.add('active');
+            if (tab.dataset.page === 'tree-chart') setTimeout(() => renderTree(treeData), 100);
+        });
+    });
+
+    // ==================== 渲染横幅 ====================
+    function renderBanner(tree) {
+        document.getElementById('tree-banner').innerHTML = `
+            <div class="tree-banner">
+                <h2>${tree.name}</h2>
+                <div class="meta">
+                    <span>姓氏：${tree.surname}</span>
+                    ${tree.hallName ? `<span>堂号：${tree.hallName}</span>` : ''}
+                    ${tree.origin ? `<span>郡望：${tree.origin}</span>` : ''}
+                    <span>成员：${tree.memberCount || allMembers.length}人</span>
+                </div>
+                ${tree.motto ? `<div class="tree-motto">${tree.motto}</div>` : ''}
+            </div>`;
+    }
+
+    // ==================== 渲染统计 ====================
+    function renderStats(stats) {
+        const items = [
+            { number: stats.totalMembers, label: '家族总人数', color: '#667eea' },
+            { number: stats.aliveMembers, label: '在世人数', color: '#52c41a' },
+            { number: stats.maleCount, label: '男性', color: '#1890ff' },
+            { number: stats.femaleCount, label: '女性', color: '#eb2f96' },
+            { number: stats.generationCount, label: '世代数', color: '#faad14' },
+        ];
+        document.getElementById('stats-grid').innerHTML = items.map(i =>
+            `<div class="stat-card"><div class="number">${i.number}</div><div class="label">${i.label}</div></div>`
+        ).join('');
+    }
+
+    // ==================== 渲染图表 ====================
+    function renderCharts(stats) {
+        // 代际分布
+        const genChart = echarts.init(document.getElementById('chart-generation'));
+        const genKeys = Object.keys(stats.generationDistribution);
+        const genValues = Object.values(stats.generationDistribution);
+        genChart.setOption({
+            tooltip: { trigger: 'axis' },
+            xAxis: { type: 'category', data: genKeys, axisLabel: { fontSize: 12 } },
+            yAxis: { type: 'value', minInterval: 1 },
+            series: [{ type: 'bar', data: genValues, itemStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: '#667eea' }, { offset: 1, color: '#764ba2' }]), borderRadius: [6, 6, 0, 0] }, barWidth: 40 }],
+            grid: { left: 40, right: 20, bottom: 30, top: 20 }
+        });
+
+        // 地域分布
+        const regionChart = echarts.init(document.getElementById('chart-region'));
+        const regionData = Object.entries(stats.regionDistribution).map(([name, value]) => ({ name, value }));
+        regionChart.setOption({
+            tooltip: { trigger: 'item', formatter: '{b}: {c}人 ({d}%)' },
+            series: [{ type: 'pie', radius: ['40%', '70%'], data: regionData, emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,.3)' } }, label: { fontSize: 12 }, itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 } }],
+            color: ['#667eea', '#764ba2', '#f093fb', '#5ee7df', '#fbc2eb', '#a6c1ee', '#c2e9fb', '#d4fc79']
+        });
+
+        window.addEventListener('resize', () => { genChart.resize(); regionChart.resize(); });
+    }
+
+    // ==================== 渲染成员表格 ====================
+    function renderMembers(members) {
+        const tbody = document.getElementById('member-tbody');
+        tbody.innerHTML = members.map(m => `
+            <tr>
+                <td><strong>${m.name}</strong></td>
+                <td><span class="badge ${m.gender === 1 ? 'badge-male' : 'badge-female'}">${m.gender === 1 ? '男' : '女'}</span></td>
+                <td>第${m.generation || '?'}世</td>
+                <td>${m.generationName || '-'}</td>
+                <td>${m.birthDate || '-'}</td>
+                <td><span class="badge ${m.isAlive === 1 ? 'badge-alive' : 'badge-dead'}">${m.isAlive === 1 ? '在世' : '已故'}</span></td>
+                <td>${m.residence || m.birthplace || '-'}</td>
+                <td>${m.occupation || '-'}</td>
+                <td><a href="javascript:showMemberDetail(${m.id})" style="color:#667eea;text-decoration:none;">详情</a></td>
+            </tr>
+        `).join('');
+    }
+
+    // ==================== 渲染大事记 ====================
+    function renderEvents(events) {
+        const types = ['其他','婚嫁','出生','逝世','乔迁','金榜题名','创业','荣誉'];
+        document.getElementById('events-timeline').innerHTML = events.map(e => `
+            <div class="timeline-item">
+                <div class="timeline-dot ${e.importance >= 2 ? 'important' : ''}"></div>
+                <div class="timeline-date">${e.eventDate || ''} · ${types[e.eventType] || '其他'}</div>
+                <div class="timeline-title">${e.title}</div>
+                <div class="timeline-content">${e.content || ''}</div>
+            </div>
+        `).join('');
+    }
+
+    // ==================== 渲染字辈 ====================
+    function renderRanks(ranks) {
+        document.getElementById('rank-poem').innerHTML = ranks.map(r => `
+            <div class="rank-char">
+                ${r.rankChar}
+                <span class="order">${r.rankOrder}</span>
+                <span class="tooltip">${r.description || '第' + r.rankOrder + '世'}</span>
+            </div>
+        `).join('');
+    }
+
+    // ==================== D3.js 家谱树 ====================
+    function renderTree(data) {
+        if (!data || data.length === 0) return;
+        const container = document.getElementById('tree-svg');
+        const width = container.parentElement.clientWidth;
+        const height = 700;
+
+        d3.select('#tree-svg').selectAll('*').remove();
+        container.setAttribute('width', width);
+        container.setAttribute('height', height);
+
+        svg = d3.select('#tree-svg');
+        g = svg.append('g');
+
+        zoom = d3.zoom().scaleExtent([0.2, 3]).on('zoom', (e) => g.attr('transform', e.transform));
+        svg.call(zoom);
+
+        const root = d3.hierarchy(data[0], d => d.children);
+        const nodeW = 170, nodeH = 90, spacing = 30;
+
+        let treemap;
+        if (currentLayout === 'vertical') {
+            treemap = d3.tree().nodeSize([nodeW + spacing, nodeH + 60]);
+        } else {
+            treemap = d3.tree().nodeSize([nodeH + 40, nodeW + 80]);
+        }
+        treeRoot = treemap(root);
+
+        // 初始偏移到居中位置
+        const initX = currentLayout === 'vertical' ? width / 2 : 120;
+        const initY = currentLayout === 'vertical' ? 60 : height / 2;
+        svg.call(zoom.transform, d3.zoomIdentity.translate(initX, initY).scale(0.85));
+
+        // 连线
+        const linkGen = currentLayout === 'vertical'
+            ? d3.linkVertical().x(d => d.x).y(d => d.y)
+            : d3.linkHorizontal().x(d => d.y).y(d => d.x);
+
+        g.selectAll('.link')
+            .data(treeRoot.links())
+            .join('path')
+            .attr('class', 'link')
+            .attr('d', linkGen);
+
+        // 节点
+        const nodes = g.selectAll('.node-group')
+            .data(treeRoot.descendants())
+            .join('g')
+            .attr('class', 'node-group')
+            .attr('transform', d => currentLayout === 'vertical'
+                ? `translate(${d.x},${d.y})`
+                : `translate(${d.y},${d.x})`)
+            .on('click', (e, d) => showMemberDetail(d.data.id));
+
+        // 节点背景
+        nodes.append('rect')
+            .attr('class', 'node-rect')
+            .attr('x', -nodeW / 2)
+            .attr('y', -nodeH / 2)
+            .attr('width', nodeW)
+            .attr('height', nodeH)
+            .attr('fill', d => d.data.alive ? '#fff' : '#f9f9f9')
+            .attr('stroke', d => d.data.gender === 0 ? '#eb2f96' : '#667eea')
+            .attr('stroke-width', 2);
+
+        // 头像圆圈
+        nodes.append('circle')
+            .attr('cx', -nodeW / 2 + 30)
+            .attr('cy', 0)
+            .attr('r', 18)
+            .attr('fill', d => d.data.gender === 0 ? '#fff0f6' : '#e6f7ff')
+            .attr('stroke', d => d.data.gender === 0 ? '#eb2f96' : '#1890ff')
+            .attr('stroke-width', 1.5);
+
+        // 头像文字（取名字最后一个字）
+        nodes.append('text')
+            .attr('x', -nodeW / 2 + 30)
+            .attr('y', 5)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', '14px')
+            .attr('font-weight', '600')
+            .attr('fill', d => d.data.gender === 0 ? '#eb2f96' : '#1890ff')
+            .text(d => d.data.name ? d.data.name.slice(-1) : '?');
+
+        // 姓名
+        nodes.append('text')
+            .attr('class', 'node-name')
+            .attr('x', -nodeW / 2 + 58)
+            .attr('y', -10)
+            .text(d => d.data.name || '未知');
+
+        // 世代+职业
+        nodes.append('text')
+            .attr('class', 'node-info')
+            .attr('x', -nodeW / 2 + 58)
+            .attr('y', 8)
+            .text(d => {
+                let parts = [];
+                if (d.data.generation) parts.push(`第${d.data.generation}世`);
+                if (d.data.generationName) parts.push(`"${d.data.generationName}"字辈`);
+                return parts.join(' · ');
+            });
+
+        // 职业
+        nodes.append('text')
+            .attr('class', 'node-info')
+            .attr('x', -nodeW / 2 + 58)
+            .attr('y', 24)
+            .text(d => d.data.occupation || '');
+
+        // 世代标签
+        nodes.append('rect')
+            .attr('x', nodeW / 2 - 18)
+            .attr('y', -nodeH / 2)
+            .attr('width', 18)
+            .attr('height', 18)
+            .attr('rx', 4)
+            .attr('fill', '#667eea');
+
+        nodes.append('text')
+            .attr('class', 'node-gen')
+            .attr('x', nodeW / 2 - 9)
+            .attr('y', -nodeH / 2 + 13)
+            .attr('text-anchor', 'middle')
+            .text(d => d.data.generation || '');
+
+        // 配偶节点
+        const spouseNodes = nodes.filter(d => d.data.spouseName);
+
+        spouseNodes.append('line')
+            .attr('class', 'spouse-connector')
+            .attr('x1', nodeW / 2)
+            .attr('y1', 0)
+            .attr('x2', nodeW / 2 + 30)
+            .attr('y2', 0);
+
+        const spouseG = spouseNodes.append('g')
+            .attr('transform', `translate(${nodeW / 2 + 30}, 0)`);
+
+        spouseG.append('rect')
+            .attr('x', 0).attr('y', -25).attr('width', 80).attr('height', 50)
+            .attr('rx', 8).attr('fill', '#fff0f6').attr('stroke', '#e8b4b8').attr('stroke-width', 1.5);
+
+        spouseG.append('text')
+            .attr('x', 40).attr('y', -2).attr('text-anchor', 'middle')
+            .attr('font-size', '13px').attr('font-weight', '600').attr('fill', '#eb2f96')
+            .text(d => d.data.spouseName);
+
+        spouseG.append('text')
+            .attr('x', 40).attr('y', 15).attr('text-anchor', 'middle')
+            .attr('font-size', '10px').attr('fill', '#999')
+            .text('配偶');
+    }
+
+    function setLayout(layout) {
+        currentLayout = layout;
+        document.getElementById('btn-vertical').classList.toggle('active', layout === 'vertical');
+        document.getElementById('btn-horizontal').classList.toggle('active', layout === 'horizontal');
+        renderTree(treeData);
+    }
+
+    function zoomTree(factor) {
+        svg.transition().duration(300).call(zoom.scaleBy, factor);
+    }
+
+    function resetZoom() {
+        const width = document.getElementById('tree-svg').parentElement.clientWidth;
+        const initX = currentLayout === 'vertical' ? width / 2 : 120;
+        const initY = currentLayout === 'vertical' ? 60 : 350;
+        svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(initX, initY).scale(0.85));
+    }
+
+    function searchMember(keyword) {
+        if (!keyword) {
+            g.selectAll('.node-rect').attr('stroke-width', 2).attr('stroke', d => d.data.gender === 0 ? '#eb2f96' : '#667eea');
+            return;
+        }
+        g.selectAll('.node-group').each(function(d) {
+            const match = d.data.name && d.data.name.includes(keyword);
+            d3.select(this).select('.node-rect')
+                .attr('stroke-width', match ? 4 : 2)
+                .attr('stroke', match ? '#ff4d4f' : (d.data.gender === 0 ? '#eb2f96' : '#667eea'));
+            if (match) {
+                const x = currentLayout === 'vertical' ? d.x : d.y;
+                const y = currentLayout === 'vertical' ? d.y : d.x;
+                const width = document.getElementById('tree-svg').parentElement.clientWidth;
+                svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(width / 2 - x * 0.85, 350 - y * 0.85).scale(0.85));
+            }
+        });
+    }
+
+    function exportImage() {
+        const svgEl = document.getElementById('tree-svg');
+        const serializer = new XMLSerializer();
+        const svgStr = serializer.serializeToString(svgEl);
+        const canvas = document.createElement('canvas');
+        canvas.width = svgEl.clientWidth * 2;
+        canvas.height = svgEl.clientHeight * 2;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const img = new Image();
+        img.onload = () => {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const a = document.createElement('a');
+            a.download = '家谱世系图.png';
+            a.href = canvas.toDataURL('image/png');
+            a.click();
+        };
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+    }
+
+    // ==================== 成员详情弹框 ====================
+    function showMemberDetail(id) {
+        const m = allMembers.find(m => m.id === id);
+        if (!m) return;
+        const parent = allMembers.find(p => p.id === m.parentId);
+        const spouse = allMembers.find(s => s.id === m.spouseId);
+        const children = allMembers.filter(c => c.parentId === m.id);
+
+        document.getElementById('modal-content').innerHTML = `
+            <div style="text-align:center;margin-bottom:20px;">
+                <div style="width:64px;height:64px;border-radius:50%;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;color:white;background:${m.gender===0?'linear-gradient(135deg,#f093fb,#f5576c)':'linear-gradient(135deg,#667eea,#764ba2)'};">${m.name.slice(-1)}</div>
+                <h3 style="margin:0;">${m.name}</h3>
+                <div style="color:#999;font-size:13px;margin-top:4px;">${m.generation ? '第' + m.generation + '世' : ''} ${m.generationName ? '"' + m.generationName + '"字辈' : ''}</div>
+            </div>
+            <div class="detail-row"><div class="detail-label">性别</div><div class="detail-value"><span class="badge ${m.gender===1?'badge-male':'badge-female'}">${m.gender===1?'男':'女'}</span></div></div>
+            <div class="detail-row"><div class="detail-label">状态</div><div class="detail-value"><span class="badge ${m.isAlive===1?'badge-alive':'badge-dead'}">${m.isAlive===1?'在世':'已故'}</span></div></div>
+            <div class="detail-row"><div class="detail-label">出生</div><div class="detail-value">${m.birthDate||'-'}</div></div>
+            ${m.deathDate?`<div class="detail-row"><div class="detail-label">去世</div><div class="detail-value">${m.deathDate}</div></div>`:''}
+            <div class="detail-row"><div class="detail-label">出生地</div><div class="detail-value">${m.birthplace||'-'}</div></div>
+            <div class="detail-row"><div class="detail-label">居住地</div><div class="detail-value">${m.residence||'-'}</div></div>
+            <div class="detail-row"><div class="detail-label">职业</div><div class="detail-value">${m.occupation||'-'}</div></div>
+            <div class="detail-row"><div class="detail-label">学历</div><div class="detail-value">${m.education||'-'}</div></div>
+            ${parent?`<div class="detail-row"><div class="detail-label">父亲</div><div class="detail-value"><a href="javascript:showMemberDetail(${parent.id})" style="color:#667eea;">${parent.name}</a></div></div>`:''}
+            ${spouse?`<div class="detail-row"><div class="detail-label">配偶</div><div class="detail-value"><a href="javascript:showMemberDetail(${spouse.id})" style="color:#667eea;">${spouse.name}</a></div></div>`:''}
+            ${children.length?`<div class="detail-row"><div class="detail-label">子女</div><div class="detail-value">${children.map(c=>`<a href="javascript:showMemberDetail(${c.id})" style="color:#667eea;margin-right:8px;">${c.name}</a>`).join('')}</div></div>`:''}
+            ${m.biography?`<div style="margin-top:16px;padding:12px;background:#f5f3ff;border-radius:8px;font-size:13px;line-height:1.8;color:#555;">${m.biography}</div>`:''}
+        `;
+        document.getElementById('member-modal').classList.add('show');
+    }
+
+    function closeModal() {
+        document.getElementById('member-modal').classList.remove('show');
+    }
+
+    // 启动
+    init();
+    </script>
+</body>
+</html>
